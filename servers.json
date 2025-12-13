@@ -1,0 +1,3 @@
+[
+  { "id": "Server_ID", "name": "Server Name", "telemetryUrl": "http://<ip>:<port>/telemetry" }
+]
