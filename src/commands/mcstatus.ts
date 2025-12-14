@@ -190,6 +190,8 @@ export async function handleMcStatusSelect(
     embeds,
     components: buildViewComponents(context.servers, currentState.selectedServerId, currentState.serverViews),
   });
+
+  scheduleSelectionReset(interaction.message, context, { pteroToken, tokenOwnerId: interaction.user.id });
 }
 
 export type StatusAction = 'console' | 'restart' | 'stop' | 'start' | 'kill';
@@ -223,17 +225,17 @@ interface ActionConfirmation {
 
 const buildConfirmationPhrase = (
   action: Extract<StatusAction, 'restart' | 'stop' | 'kill'>,
-  serverId: string
+  serverName: string
 ): string => {
-  if (action === 'restart') return `RESTART ${serverId}`;
-  if (action === 'stop') return `STOP ${serverId}`;
-  return `KILL ${serverId} YES`;
+  if (action === 'restart') return `restart ${serverName}`;
+  if (action === 'stop') return `stop ${serverName}`;
+  return `kill ${serverName} yes`;
 };
 
 const normalizeConfirmationValue = (value: string): string =>
   value
     .trim()
-    .toUpperCase()
+    .toLowerCase()
     .replace(/\s+/g, ' ');
 
 const selectionResetTimers = new Map<string, NodeJS.Timeout>();
@@ -296,17 +298,17 @@ const buildConfirmationModal = (
   serverId: string,
   serverName: string
 ) => {
-  const phrase = buildConfirmationPhrase(action, serverId);
-  const actionLabel = action.toUpperCase();
+  const phrase = buildConfirmationPhrase(action, serverName);
+  const actionLabel = action.toLowerCase();
 
   return new ModalBuilder()
     .setCustomId(`${MCSTATUS_CONFIRM_CUSTOM_ID_PREFIX}:${action}:${messageId}:${serverId}`)
-    .setTitle(`Confirm ${actionLabel} — ${serverId}`)
+    .setTitle(`confirm ${actionLabel} — ${serverName}`)
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('confirm_action')
-          .setLabel(`Type "${phrase}" to ${action} ${serverName}`)
+          .setLabel(`type "${phrase}" to ${action} ${serverName}`)
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setPlaceholder(phrase)
@@ -348,6 +350,8 @@ export async function handleMcStatusAction(
     await sendTemporaryReply(interaction, 'You need Moderator permissions to perform this action.');
     return;
   }
+
+  scheduleSelectionReset(interaction.message, context, { tokenOwnerId: interaction.user.id });
 
   const currentState = resolveState(interaction, context);
   if (!currentState.selectedServerId) {
@@ -417,7 +421,16 @@ export async function handleMcStatusActionConfirm(
     return;
   }
 
-  const expectedPhrase = buildConfirmationPhrase(parsed.action, parsed.serverId);
+  const targetServer = context.servers.find((server) => server.id === parsed.serverId);
+  if (!targetServer) {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferUpdate();
+    }
+    await sendTemporaryReply(interaction, 'Selected server is no longer available.');
+    return;
+  }
+
+  const expectedPhrase = buildConfirmationPhrase(parsed.action, targetServer.name);
   const confirmation = interaction.fields.getTextInputValue('confirm_action') ?? '';
 
   if (normalizeConfirmationValue(confirmation) !== normalizeConfirmationValue(expectedPhrase)) {
@@ -428,15 +441,6 @@ export async function handleMcStatusActionConfirm(
       interaction,
       `Confirmation failed. Type the exact phrase: "${expectedPhrase}"`
     );
-    return;
-  }
-
-  const targetServer = context.servers.find((server) => server.id === parsed.serverId);
-  if (!targetServer) {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferUpdate();
-    }
-    await sendTemporaryReply(interaction, 'Selected server is no longer available.');
     return;
   }
 
