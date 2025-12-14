@@ -1,6 +1,20 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, Message } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
+  EmbedBuilder,
+  Message,
+  MessageActionRowComponentBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+} from 'discord.js';
 import { ServerConfig } from '../config/servers';
-import { MCSTATUS_VIEW_PLAYERS_ID, MCSTATUS_VIEW_STATUS_ID } from '../config/constants';
+import {
+  MCSTATUS_ACTION_CUSTOM_ID_PREFIX,
+  MCSTATUS_SELECT_CUSTOM_ID,
+  MCSTATUS_VIEW_CUSTOM_ID_PREFIX,
+} from '../config/constants';
 import { PterodactylResources, fetchPterodactylResources } from './pterodactyl';
 import { TelemetryResponse, fetchTelemetry } from './telemetry';
 import { logger } from '../utils/logger';
@@ -13,6 +27,30 @@ export interface ServerStatus {
 }
 
 export type StatusView = 'status' | 'players';
+
+export interface DashboardState {
+  selectedServerId: string | null;
+  serverViews: Record<string, StatusView>;
+}
+
+const VIEW_CUSTOM_ID_REGEX = new RegExp(`^${MCSTATUS_VIEW_CUSTOM_ID_PREFIX}:(status|players)$`);
+
+export const buildDefaultState = (defaultView: StatusView = 'status'): DashboardState => ({
+  selectedServerId: null,
+  serverViews: {},
+});
+
+export const getServerView = (
+  serverId: string,
+  state: DashboardState,
+  defaultView: StatusView = 'status'
+): StatusView => state.serverViews[serverId] ?? defaultView;
+
+export const parseViewButton = (customId: string): StatusView | null => {
+  const match = customId.match(VIEW_CUSTOM_ID_REGEX);
+  if (!match) return null;
+  return match[1] as StatusView;
+};
 
 export async function fetchServerStatuses(
   servers: ServerConfig[],
@@ -175,82 +213,154 @@ const formatFooterDate = (lastUpdated: Date) => {
   });
 };
 
-export const buildStatusEmbed = (
+export const buildStatusEmbeds = (
   servers: ServerConfig[],
   statuses: Map<string, ServerStatus>,
   lastUpdated: Date,
-  view: StatusView = 'status'
+  serverViews: Record<string, StatusView>,
+  selectedServerId: string | null,
+  defaultView: StatusView = 'status'
 ) => {
-  const embed = new EmbedBuilder().setTitle('Minecraft Server Status').setColor(0x2d3136);
-
-  // Nudge status right by padding server name to longest visible name
-  const maxName = Math.min(28, Math.max(10, ...servers.map((s) => (s.pteroName ?? s.name).length)));
-
-  // Make the "|" align consistently. Bump this number if you want more space before the bar.
   const leftWidth = 16;
+  const embeds: EmbedBuilder[] = [];
 
-  const divider = '──────────────';
+  const selectedId = servers.some((server) => server.id === selectedServerId) ? selectedServerId : null;
 
-  servers.forEach((server, idx) => {
+  servers.forEach((server) => {
     const status = statuses.get(server.id);
     const telemetry = status?.telemetry;
     const pterodactyl = status?.pterodactyl;
 
-    const value =
+    const view = getServerView(server.id, { selectedServerId, serverViews }, defaultView);
+    const description =
       view === 'status'
         ? formatStatusLines(telemetry, pterodactyl, status?.telemetryError, leftWidth)
         : formatPlayerLines(telemetry, status?.telemetryError);
 
     const name = server.pteroName ?? server.name;
-    const statusLabel = formatStatus(pterodactyl?.currentState);
+    const prefix = server.id === selectedId ? '▶ ' : '';
+    const title = `${prefix}${name}  ${formatStatus(pterodactyl?.currentState)}`;
 
-    // Padding spaces *do* render in embed field names enough to “nudge” the status.
-    const fieldName = `${name.padEnd(maxName)}  ${statusLabel}`;
+    const embedColor = server.id === selectedId ? 0x00c6ff : 0x2b1645;
 
-    embed.addFields({ name: fieldName, value, inline: false });
-
-    if (idx !== servers.length - 1) {
-      embed.addFields({ name: '\u200b', value: divider, inline: false });
-    }
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle(title)
+        .setColor(embedColor)
+        .setDescription(description)
+        .setFooter({ text: `Last update: ${formatFooterDate(lastUpdated)} UTC` })
+    );
   });
 
-  embed.setFooter({ text: `Last update: ${formatFooterDate(lastUpdated)} UTC` });
-  return embed;
+  return embeds;
 };
 
 export function buildViewComponents(
-  activeView: StatusView
-): ActionRowBuilder<ButtonBuilder>[] {
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(MCSTATUS_VIEW_STATUS_ID)
-        .setLabel('Status')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(activeView === 'status'),
-      new ButtonBuilder()
-        .setCustomId(MCSTATUS_VIEW_PLAYERS_ID)
-        .setLabel('Players')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(activeView === 'players')
-    ),
-  ];
+  servers: ServerConfig[],
+  selectedServerId: string | null,
+  serverViews: Record<string, StatusView>,
+  defaultView: StatusView = 'status'
+): ActionRowBuilder<MessageActionRowComponentBuilder>[] {
+  const selectedId = servers.some((server) => server.id === selectedServerId) ? selectedServerId : null;
+  const activeView = selectedId ? getServerView(selectedId, { selectedServerId, serverViews }, defaultView) : defaultView;
+
+  const selectMenu = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(MCSTATUS_SELECT_CUSTOM_ID)
+      .setPlaceholder('Select server…')
+      .addOptions(
+        servers.map((server) =>
+          new StringSelectMenuOptionBuilder()
+            .setLabel(server.name)
+            .setValue(server.id)
+            .setDefault(server.id === selectedId)
+        )
+      )
+  );
+
+  const viewButtons = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${MCSTATUS_VIEW_CUSTOM_ID_PREFIX}:status`)
+      .setLabel('Status')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!selectedId || activeView === 'status'),
+    new ButtonBuilder()
+      .setCustomId(`${MCSTATUS_VIEW_CUSTOM_ID_PREFIX}:players`)
+      .setLabel('Players')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!selectedId || activeView === 'players')
+  );
+
+  const actionButtons = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${MCSTATUS_ACTION_CUSTOM_ID_PREFIX}:console`)
+      .setLabel('Open Console')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!selectedId),
+    new ButtonBuilder()
+      .setCustomId(`${MCSTATUS_ACTION_CUSTOM_ID_PREFIX}:restart`)
+      .setLabel('Restart')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(!selectedId),
+    new ButtonBuilder()
+      .setCustomId(`${MCSTATUS_ACTION_CUSTOM_ID_PREFIX}:stop`)
+      .setLabel('Stop')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(!selectedId),
+    new ButtonBuilder()
+      .setCustomId(`${MCSTATUS_ACTION_CUSTOM_ID_PREFIX}:kill`)
+      .setLabel('Kill')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(!selectedId),
+    new ButtonBuilder()
+      .setCustomId(`${MCSTATUS_ACTION_CUSTOM_ID_PREFIX}:start`)
+      .setLabel('Start')
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(!selectedId)
+  );
+
+  return [selectMenu, viewButtons, actionButtons];
 }
 
-export const getViewFromMessage = (message: Message): StatusView => {
+export const getDashboardStateFromMessage = (
+  message: Message,
+  servers: ServerConfig[],
+  defaultView: StatusView = 'status'
+): DashboardState => {
+  const state = buildDefaultState(defaultView);
+  const validIds = new Set(servers.map((server) => server.id));
+
   for (const row of message.components) {
-    const actionRow = (row as { components?: { customId?: string; disabled?: boolean }[] }).components;
+    const actionRow = (row as { components?: { customId?: string; disabled?: boolean; options?: { value: string; default?: boolean }[]; type?: number }[] }).components;
     if (!actionRow) continue;
 
     for (const component of actionRow) {
-      if (component.customId === MCSTATUS_VIEW_PLAYERS_ID && component.disabled) {
-        return 'players';
+      if (!component.customId) continue;
+
+      if (component.customId === MCSTATUS_SELECT_CUSTOM_ID && component.type === ComponentType.StringSelect) {
+        const selectedOption = component.options?.find((option) => option.default);
+        if (selectedOption && validIds.has(selectedOption.value)) {
+          state.selectedServerId = selectedOption.value;
+        }
       }
-      if (component.customId === MCSTATUS_VIEW_STATUS_ID && component.disabled) {
-        return 'status';
+
+      const parsedView = parseViewButton(component.customId);
+      if (parsedView) {
+        const isDisabled = (component as { disabled?: boolean }).disabled;
+        if (isDisabled && state.selectedServerId) {
+          state.serverViews[state.selectedServerId] = parsedView;
+        }
       }
     }
   }
 
-  return 'status';
+  if (state.selectedServerId && !validIds.has(state.selectedServerId)) {
+    state.selectedServerId = null;
+  }
+
+  if (state.selectedServerId && !state.serverViews[state.selectedServerId]) {
+    state.serverViews[state.selectedServerId] = defaultView;
+  }
+
+  return state;
 };

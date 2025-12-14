@@ -31,6 +31,8 @@ const cache = new Map<string, CacheEntry>();
 const lastKnownStates = new Map<string, string | undefined>();
 const runningSince = new Map<string, number>();
 
+export type PowerSignal = 'start' | 'restart' | 'stop' | 'kill';
+
 const getEnv = () => {
   const panelUrl = process.env.PTERO_PANEL_URL;
   const token = process.env.PTERO_CLIENT_TOKEN;
@@ -87,17 +89,19 @@ const validateAndParseLimits = (payload: unknown): PterodactylLimits => {
   };
 };
 
-const withTimeout = async (url: string, token: string) => {
+const withTimeout = async (url: string, token: string, init: RequestInit = { method: 'GET' }) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(url, {
-      method: 'GET',
+      method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
       },
+      body: init.body,
       signal: controller.signal,
     });
 
@@ -105,7 +109,19 @@ const withTimeout = async (url: string, token: string) => {
       throw new Error(`HTTP ${response.status}`);
     }
 
-    return (await response.json()) as unknown;
+    if (response.status === 204) {
+      return null;
+    }
+
+    const text = await response.text();
+    if (!text) return null;
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      return JSON.parse(text) as unknown;
+    }
+
+    return text as unknown;
   } finally {
     clearTimeout(timeout);
   }
@@ -172,6 +188,21 @@ export async function fetchPterodactylResources(
 
   cache.set(server.id, { data, timestamp: now });
   return data;
+}
+
+export const buildPanelConsoleUrl = (server: ServerConfig): string => {
+  const { panelUrl } = getEnv();
+  return `${panelUrl}/server/${server.pteroIdentifier}`;
+};
+
+export async function sendPowerSignal(server: ServerConfig, signal: PowerSignal): Promise<void> {
+  const { panelUrl, token } = getEnv();
+  const powerUrl = `${panelUrl}/api/client/servers/${server.pteroIdentifier}/power`;
+
+  await withTimeout(powerUrl, token, {
+    method: 'POST',
+    body: JSON.stringify({ signal }),
+  });
 }
 
 export function clearPterodactylCache(): void {
