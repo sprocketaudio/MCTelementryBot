@@ -5,6 +5,7 @@ import {
   SlashCommandBuilder,
   SlashCommandChannelOption,
   TextBasedChannel,
+  GuildTextBasedChannel,
 } from 'discord.js';
 import { DashboardConfig, loadDashboardConfig, saveDashboardConfig } from '../services/dashboardStore';
 import { buildRefreshComponents, buildStatusEmbed, fetchServerStatuses } from '../services/status';
@@ -18,7 +19,11 @@ export interface DashboardContext {
   onConfigured?: (config: DashboardConfig) => Promise<void> | void;
 }
 
-const SUPPORTED_CHANNELS = [ChannelType.GuildText, ChannelType.GuildAnnouncement];
+const SUPPORTED_CHANNELS = [ChannelType.GuildText, ChannelType.GuildAnnouncement] as const;
+
+function isSupportedTextChannel(channel: TextBasedChannel): channel is GuildTextBasedChannel {
+  return channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement;
+}
 
 export const mcDashboardCommand = new SlashCommandBuilder()
   .setName('mcdashboard')
@@ -45,13 +50,17 @@ export async function executeMcDashboard(
   }
 
   const channel = interaction.options.getChannel('channel', true);
-  if (!SUPPORTED_CHANNELS.includes(channel.type)) {
+  const isSupportedChannel =
+    channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement;
+  if (!isSupportedChannel) {
     await interaction.reply({
       content: 'Please select a text channel.',
       ephemeral: true,
     });
     return;
   }
+
+  const selectedChannel = channel as GuildTextBasedChannel;
 
   await interaction.deferReply({ ephemeral: true });
 
@@ -65,8 +74,8 @@ export async function executeMcDashboard(
   if (existingConfig && existingConfig.guildId === interaction.guildId) {
     try {
       const existingChannel = await interaction.client.channels.fetch(existingConfig.channelId);
-      if (existingChannel && existingChannel.isTextBased()) {
-        const textChannel = existingChannel as TextBasedChannel;
+      if (existingChannel && existingChannel.isTextBased() && isSupportedTextChannel(existingChannel)) {
+        const textChannel = existingChannel;
         targetMessage = await textChannel.messages.fetch(existingConfig.messageId);
         await targetMessage.edit({ embeds: [embed], components });
       }
@@ -76,8 +85,12 @@ export async function executeMcDashboard(
   }
 
   if (!targetMessage) {
-    const textChannel = channel as unknown as TextBasedChannel;
-    targetMessage = await textChannel.send({ embeds: [embed], components });
+    targetMessage = await selectedChannel.send({ embeds: [embed], components });
+  }
+
+  if (!targetMessage) {
+    await interaction.editReply({ content: 'Unable to configure dashboard. Please try again.' });
+    return;
   }
 
   const config: DashboardConfig = {
