@@ -227,9 +227,10 @@ const buildConfirmationPhrase = (
   action: Extract<StatusAction, 'restart' | 'stop' | 'kill'>,
   serverName: string
 ): string => {
-  if (action === 'restart') return `restart ${serverName}`;
-  if (action === 'stop') return `stop ${serverName}`;
-  return `kill ${serverName} yes`;
+  const name = serverName.toLowerCase();
+  if (action === 'restart') return `restart ${name}`;
+  if (action === 'stop') return `stop ${name}`;
+  return `kill ${name} yes`;
 };
 
 const normalizeConfirmationValue = (value: string): string =>
@@ -308,7 +309,7 @@ const buildConfirmationModal = (
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('confirm_action')
-          .setLabel(`type "${phrase}" to ${action} ${serverName}`)
+          .setLabel('type the exact phrase below')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setPlaceholder(phrase)
@@ -458,7 +459,7 @@ export async function handleMcStatusActionConfirm(
     });
     await sendTemporaryReply(
       interaction,
-      `${parsed.action.charAt(0).toUpperCase()}${parsed.action.slice(1)} sent for ${parsed.serverId}.`
+      `${parsed.action.charAt(0).toUpperCase()}${parsed.action.slice(1)} sent for ${targetServer.name}.`
     );
     context.logAudit?.(buildActionAuditEntry(parsed.action, targetServer.name), interaction.user);
   } catch (error) {
