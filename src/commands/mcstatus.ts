@@ -2,16 +2,18 @@ import { ButtonInteraction, ChatInputCommandInteraction, PermissionFlagsBits, Sl
 import { ServerConfig } from '../config/servers';
 import {
   StatusView,
-  buildStatusEmbed,
+  buildDefaultViews,
+  buildStatusEmbeds,
   buildViewComponents,
   fetchServerStatuses,
+  getViewsFromMessage,
 } from '../services/status';
 import { isAdmin } from '../utils/permissions';
 
 export interface CommandContext {
   servers: ServerConfig[];
   adminRoleId?: string;
-  onViewChange?: (view: StatusView, messageId?: string) => void;
+  onViewChange?: (views: Map<string, StatusView>, messageId?: string) => void;
 }
 
 export const mcStatusCommand = new SlashCommandBuilder()
@@ -34,15 +36,16 @@ export async function executeMcStatus(
   await interaction.deferReply();
 
   const statuses = await fetchServerStatuses(context.servers);
-  const embed = buildStatusEmbed(context.servers, statuses, new Date());
+  const views = buildDefaultViews(context.servers);
+  const embeds = buildStatusEmbeds(context.servers, statuses, new Date(), views);
 
-  await interaction.editReply({ embeds: [embed], components: buildViewComponents('status') });
+  await interaction.editReply({ embeds, components: buildViewComponents(context.servers, views) });
 }
 
 export async function handleMcStatusView(
   interaction: ButtonInteraction,
   context: CommandContext,
-  view: StatusView
+  request: { serverId: string; view: StatusView }
 ): Promise<void> {
   if (!isAdmin(interaction, context.adminRoleId)) {
     await interaction.reply({
@@ -54,12 +57,15 @@ export async function handleMcStatusView(
 
   await interaction.deferUpdate();
 
+  const currentViews = getViewsFromMessage(interaction.message, context.servers);
+  currentViews.set(request.serverId, request.view);
+
   if (context.onViewChange) {
-    context.onViewChange(view, interaction.message.id);
+    context.onViewChange(currentViews, interaction.message.id);
   }
 
   const statuses = await fetchServerStatuses(context.servers, { forceRefresh: true });
-  const embed = buildStatusEmbed(context.servers, statuses, new Date(), view);
+  const embeds = buildStatusEmbeds(context.servers, statuses, new Date(), currentViews);
 
-  await interaction.editReply({ embeds: [embed], components: buildViewComponents(view) });
+  await interaction.editReply({ embeds, components: buildViewComponents(context.servers, currentViews) });
 }

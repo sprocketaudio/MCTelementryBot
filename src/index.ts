@@ -2,15 +2,16 @@ import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, REST, Routes, TextBasedChannel } from 'discord.js';
 import { executeMcDashboard, mcDashboardCommand } from './commands/mcdashboard';
 import { executeMcStatus, handleMcStatusView, mcStatusCommand } from './commands/mcstatus';
-import { MCSTATUS_VIEW_PLAYERS_ID, MCSTATUS_VIEW_STATUS_ID } from './config/constants';
+import { MCSTATUS_VIEW_CUSTOM_ID_PREFIX } from './config/constants';
 import { loadServers } from './config/servers';
 import { loadDashboardConfig, DashboardConfig } from './services/dashboardStore';
 import {
   StatusView,
-  buildStatusEmbed,
+  buildStatusEmbeds,
   buildViewComponents,
   fetchServerStatuses,
-  getViewFromMessage,
+  getViewsFromMessage,
+  parseViewButton,
 } from './services/status';
 import { logger } from './utils/logger';
 
@@ -30,7 +31,7 @@ const resolvedGuildId = guildId!;
 const servers = loadServers();
 let dashboardConfig: DashboardConfig | null = loadDashboardConfig();
 let dashboardInterval: NodeJS.Timeout | null = null;
-let dashboardView: StatusView | null = null;
+let dashboardViews: Map<string, StatusView> | null = null;
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -56,11 +57,11 @@ async function refreshDashboard(options: { forceRefresh?: boolean } = {}) {
     const message = await textChannel.messages.fetch(dashboardConfig.messageId);
 
     const statuses = await fetchServerStatuses(servers, options);
-    const currentView = dashboardView ?? getViewFromMessage(message);
-    dashboardView = currentView;
-    const embed = buildStatusEmbed(servers, statuses, new Date(), currentView);
+    const currentViews = dashboardViews ?? getViewsFromMessage(message, servers);
+    dashboardViews = currentViews;
+    const embeds = buildStatusEmbeds(servers, statuses, new Date(), currentViews);
 
-    await message.edit({ embeds: [embed], components: buildViewComponents(currentView) });
+    await message.edit({ embeds, components: buildViewComponents(servers, currentViews) });
   } catch (error) {
     logger.warn('Dashboard refresh failed; disabling auto-refresh until reconfigured.', error);
     if (dashboardInterval) {
@@ -111,29 +112,18 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       return;
     }
 
-    if (interaction.isButton() && interaction.customId === MCSTATUS_VIEW_STATUS_ID) {
+    if (interaction.isButton() && interaction.customId.startsWith(MCSTATUS_VIEW_CUSTOM_ID_PREFIX)) {
+      const parsedButton = parseViewButton(interaction.customId);
+      if (!parsedButton) return;
       await handleMcStatusView(interaction, {
         servers,
         adminRoleId,
-        onViewChange: (view, messageId) => {
+        onViewChange: (views, messageId) => {
           if (dashboardConfig?.messageId === messageId) {
-            dashboardView = view;
+            dashboardViews = views;
           }
         },
-      }, 'status');
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === MCSTATUS_VIEW_PLAYERS_ID) {
-      await handleMcStatusView(interaction, {
-        servers,
-        adminRoleId,
-        onViewChange: (view, messageId) => {
-          if (dashboardConfig?.messageId === messageId) {
-            dashboardView = view;
-          }
-        },
-      }, 'players');
+      }, parsedButton);
       return;
     }
   } catch (error) {

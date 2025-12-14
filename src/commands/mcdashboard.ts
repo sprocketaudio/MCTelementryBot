@@ -9,7 +9,7 @@ import {
   GuildTextBasedChannel,
 } from 'discord.js';
 import { DashboardConfig, loadDashboardConfig, saveDashboardConfig } from '../services/dashboardStore';
-import { buildStatusEmbed, buildViewComponents, fetchServerStatuses } from '../services/status';
+import { buildDefaultViews, buildStatusEmbeds, buildViewComponents, fetchServerStatuses } from '../services/status';
 import { isAdmin } from '../utils/permissions';
 import { logger } from '../utils/logger';
 import { ServerConfig } from '../config/servers';
@@ -66,8 +66,9 @@ export async function executeMcDashboard(
   await interaction.deferReply({ ephemeral: true });
 
   const statuses = await fetchServerStatuses(context.servers, { forceRefresh: true });
-  const embed = buildStatusEmbed(context.servers, statuses, new Date());
-  const components = buildViewComponents('status');
+  const views = buildDefaultViews(context.servers);
+  const embeds = buildStatusEmbeds(context.servers, statuses, new Date(), views);
+  const components = buildViewComponents(context.servers, views);
 
   const existingConfig = loadDashboardConfig();
   let targetMessage: Message<true> | null = null;
@@ -78,7 +79,7 @@ export async function executeMcDashboard(
       if (existingChannel && existingChannel.isTextBased() && isSupportedTextChannel(existingChannel)) {
         const textChannel = existingChannel;
         targetMessage = await textChannel.messages.fetch(existingConfig.messageId);
-        await targetMessage.edit({ embeds: [embed], components });
+        await targetMessage.edit({ embeds, components });
       }
     } catch (error) {
       logger.warn('Existing dashboard message could not be updated, creating a new one.', error);
@@ -87,7 +88,7 @@ export async function executeMcDashboard(
   }
 
   if (!targetMessage) {
-    targetMessage = await selectedChannel.send({ embeds: [embed], components });
+    targetMessage = await selectedChannel.send({ embeds, components });
   }
 
   if (!targetMessage) {
