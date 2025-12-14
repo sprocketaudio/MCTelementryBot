@@ -119,7 +119,12 @@ const calculatePercent = (used?: number, limit?: number) => {
 
 const isHot = (percent?: number) => percent !== undefined && percent > 90;
 
-const formatResources = (resources?: PterodactylResources) => {
+// Builds: "<left padded>  |  <right>" so the "|" lines up across servers.
+// No monospace, so it’s “best-effort” alignment, but it looks much cleaner.
+const twoColBar = (left: string, right: string, leftWidth: number) =>
+  `${left.padEnd(leftWidth)}  |  ${right}`;
+
+const formatResources = (resources: PterodactylResources | undefined, leftWidth: number) => {
   const cpuPercent = resources?.cpuLimitPercent
     ? calculatePercent(resources.cpuAbsolute, resources.cpuLimitPercent)
     : toNumberOrUndefined(resources?.cpuAbsolute);
@@ -127,16 +132,17 @@ const formatResources = (resources?: PterodactylResources) => {
   const diskPercent = calculatePercent(resources?.diskBytes, resources?.diskLimitBytes);
 
   const cpuIcon = isHot(cpuPercent) ? '🔥' : '🧠';
-  const memIcon = isHot(memPercent) ? '🔥' : '🧮';
+  const memIcon = isHot(memPercent) ? '🔥' : '🧮'; // keep abacus
   const diskIcon = isHot(diskPercent) ? '🔥' : '💾';
 
   const cpuText = `${cpuIcon} CPU ${formatPercent(cpuPercent)}`;
   const memText = `${memIcon} RAM ${formatPercent(memPercent)}`;
   const diskText = `${diskIcon} Disk ${formatPercent(diskPercent)}`;
-  const uptimeText = resources?.uptimeMs !== undefined ? `⏱ Uptime ${formatUptime(resources?.uptimeMs)}` : null;
+  const uptimeText =
+    resources?.uptimeMs !== undefined ? `⏱ Uptime ${formatUptime(resources.uptimeMs)}` : '⏱ Uptime —';
 
-  const cpuRamLine = [cpuText, memText].filter(Boolean).join(' | ');
-  const diskUptimeLine = [diskText, uptimeText].filter(Boolean).join(' | ');
+  const cpuRamLine = twoColBar(cpuText, memText, leftWidth);
+  const diskUptimeLine = twoColBar(diskText, uptimeText, leftWidth);
 
   return [cpuRamLine, diskUptimeLine];
 };
@@ -144,11 +150,12 @@ const formatResources = (resources?: PterodactylResources) => {
 const formatStatusLines = (
   telemetry?: TelemetryResponse,
   resources?: PterodactylResources,
-  telemetryError?: Error
+  telemetryError?: Error,
+  leftWidth: number = 16
 ) => {
   const lines = [formatPlayerSummary(telemetry, telemetryError), formatTpsMspt(telemetry)];
 
-  const resourceLines = formatResources(resources);
+  const resourceLines = formatResources(resources, leftWidth);
   if (resourceLines.length > 0) {
     lines.push('', ...resourceLines);
   }
@@ -176,19 +183,35 @@ export const buildStatusEmbed = (
 ) => {
   const embed = new EmbedBuilder().setTitle('Minecraft Server Status').setColor(0x2d3136);
 
-  servers.forEach((server) => {
+  // Nudge status right by padding server name to longest visible name
+  const maxName = Math.min(28, Math.max(10, ...servers.map((s) => (s.pteroName ?? s.name).length)));
+
+  // Make the "|" align consistently. Bump this number if you want more space before the bar.
+  const leftWidth = 16;
+
+  const divider = '──────────────';
+
+  servers.forEach((server, idx) => {
     const status = statuses.get(server.id);
     const telemetry = status?.telemetry;
     const pterodactyl = status?.pterodactyl;
 
     const value =
       view === 'status'
-        ? formatStatusLines(telemetry, pterodactyl, status?.telemetryError)
+        ? formatStatusLines(telemetry, pterodactyl, status?.telemetryError, leftWidth)
         : formatPlayerLines(telemetry, status?.telemetryError);
 
     const name = server.pteroName ?? server.name;
     const statusLabel = formatStatus(pterodactyl?.currentState);
-    embed.addFields({ name: `${name} ${statusLabel}\n`, value });
+
+    // Padding spaces *do* render in embed field names enough to “nudge” the status.
+    const fieldName = `${name.padEnd(maxName)}  ${statusLabel}`;
+
+    embed.addFields({ name: fieldName, value, inline: false });
+
+    if (idx !== servers.length - 1) {
+      embed.addFields({ name: '\u200b', value: divider, inline: false });
+    }
   });
 
   embed.setFooter({ text: `Last update: ${formatFooterDate(lastUpdated)} UTC` });
